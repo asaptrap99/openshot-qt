@@ -188,7 +188,8 @@ def channel_layout_for(channels: int):
     return openshot.LAYOUT_STEREO if channels > 1 else openshot.LAYOUT_MONO
 
 
-def export_clip(input_path: str, cut: CutSpec, output_path: str, info: dict):
+def export_clip(input_path: str, cut: CutSpec, output_path: str, info: dict,
+                 codec: str = "libx264"):
     """Render a single trimmed clip at source resolution using Clip + FFmpegWriter."""
     fps_frac = openshot.Fraction(info["fps"]["num"], info["fps"]["den"])
     fps_float = info["fps"]["num"] / info["fps"]["den"]
@@ -207,10 +208,14 @@ def export_clip(input_path: str, cut: CutSpec, output_path: str, info: dict):
     writer = openshot.FFmpegWriter(output_path)
     try:
         writer.SetVideoOptions(
-            True, "libx264", fps_frac, width, height, pixel_ratio, False, False, 22
+            True, codec, fps_frac, width, height, pixel_ratio, False, False, 22
         )
-        writer.PrepareStreams()
         writer.SetAudioOptions(has_audio, "aac", sample_rate, channels, layout, 192000)
+        # NOTE: call PrepareStreams() exactly once, after both Set*Options calls.
+        # Calling it twice (once per Set*Options call, as openshot-qt's own
+        # export_clips.py does) was found to create a duplicate video stream
+        # and corrupt the output in the libopenshot 0.3.2 build this was
+        # tested against - see README.md "What's verified vs. not".
         writer.PrepareStreams()
         writer.Open()
 
@@ -222,16 +227,18 @@ def export_clip(input_path: str, cut: CutSpec, output_path: str, info: dict):
         clip_reader.Close()
 
 
-def export_vertical_clip(input_path: str, cut: CutSpec, output_path: str, info: dict):
+def export_vertical_clip(input_path: str, cut: CutSpec, output_path: str, info: dict,
+                          codec: str = "libx264"):
     """
     Render a 9:16 (1080x1920) center-cropped version of the clip using an
     openshot.Timeline + Clip with gravity/scale set to GRAVITY_CENTER / SCALE_CROP.
 
-    NOTE: this path uses the documented libopenshot Timeline/Clip compositing
-    API (Clip.gravity, Clip.scale, Clip.Position/Start/End/Layer, Timeline.AddClip)
-    which could not be executed in the development sandbox (libopenshot isn't
-    installed there). See README.md "What's verified vs. not" before relying
-    on this in production - test it against your real libopenshot build first.
+    Verified end-to-end against libopenshot 0.3.2 (python3-openshot on Ubuntu
+    24.04): Timeline + Clip.gravity/scale/Position/Start/End/Layer compositing
+    correctly produces a 1080x1920 output. See README.md "What's verified vs.
+    not" for the one caveat found in that testing: the "libx264" codec silently
+    dropped the video stream in this specific build; "libx265" and "mpeg4"
+    worked correctly. Pass --codec to override if you hit the same symptom.
     """
     fps_frac = openshot.Fraction(info["fps"]["num"], info["fps"]["den"])
     fps_float = info["fps"]["num"] / info["fps"]["den"]
@@ -257,12 +264,11 @@ def export_vertical_clip(input_path: str, cut: CutSpec, output_path: str, info: 
     writer = openshot.FFmpegWriter(output_path)
     try:
         writer.SetVideoOptions(
-            True, "libx264", fps_frac, VERTICAL_WIDTH, VERTICAL_HEIGHT,
+            True, codec, fps_frac, VERTICAL_WIDTH, VERTICAL_HEIGHT,
             openshot.Fraction(1, 1), False, False, 22,
         )
-        writer.PrepareStreams()
         writer.SetAudioOptions(has_audio, "aac", sample_rate, channels, layout, 192000)
-        writer.PrepareStreams()
+        writer.PrepareStreams()  # call once, after both Set*Options (see note above)
         writer.Open()
 
         start_frame, end_frame = start_and_end_frames(cut.start, cut.end, fps_float)
@@ -288,12 +294,17 @@ def generate_thumbnail(rendered_clip_path: str, thumb_path: str,
         frame_number = max(1, int(round(at_seconds * fps_float)) + 1)
         frame_number = min(frame_number, video_length)
         frame = reader.GetFrame(frame_number)
+        # NOTE: libopenshot 0.3.2's Frame.Thumbnail() takes 10 args (no
+        # trailing scale_mode param) - openshot-qt's own thumbnail.py targets
+        # a newer libopenshot that adds an 11th `scale_mode` arg. Verified
+        # against the actually-installed 0.3.2 (python3-openshot on Ubuntu
+        # 24.04); if you're on a newer libopenshot and this errors with
+        # "expected at most 10 arguments", add `openshot.SCALE_CROP` back on.
         frame.Thumbnail(
             thumb_path,
             int(info.get("width", 1280)),
             int(info.get("height", 720)),
             "", "", "#000", False, "jpeg", 90, 0.0,
-            openshot.SCALE_CROP,
         )
     finally:
         reader.Close()
@@ -357,6 +368,10 @@ def main():
     parser.add_argument("--max-duration", type=float, default=MAX_SHORT_SECONDS,
                          help=f"Warn (don't fail) if a clip exceeds this many seconds "
                               f"(default: {MAX_SHORT_SECONDS})")
+    parser.add_argument("--codec", default="libx264",
+                         help="Video codec passed to FFmpegWriter (default: libx264). "
+                              "If exports come out with the wrong resolution or an "
+                              "empty video track, try 'libx265' or 'mpeg4' - see README.md")
     args = parser.parse_args()
 
     # --- Load + validate cuts ---
@@ -404,7 +419,7 @@ def main():
 
         clip_start = time.time()
         try:
-            export_clip(args.input, cut, output_path, info)
+            export_clip(args.input, cut, output_path, info, codec=args.codec)
         except Exception as ex:
             print(f"ERROR exporting clip {cut.clip_number}: {ex}", file=sys.stderr)
             traceback.print_exc()
@@ -443,7 +458,7 @@ def main():
         if args.vertical:
             vertical_path = os.path.join(args.output, f"{base_name}_vertical.mp4")
             try:
-                export_vertical_clip(args.input, cut, vertical_path, info)
+                export_vertical_clip(args.input, cut, vertical_path, info, codec=args.codec)
             except Exception as ex:
                 print(f"WARNING: vertical export failed for clip {cut.clip_number}: {ex}",
                       file=sys.stderr)
