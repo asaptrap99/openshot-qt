@@ -1,0 +1,16 @@
+# video_trimmer.py has no third-party pip dependencies of its own -
+# argparse/json/re/dataclasses are all in the Python 3 standard library.
+#
+# The ONLY dependency that matters is `openshot` (the libopenshot Python
+# bindings), and it is NOT a normal pip package:
+#
+#   pip install openshot   <-- does not exist on PyPI, will fail
+#
+# libopenshot's Python module is produced by compiling the libopenshot C++
+# library with SWIG bindings enabled, or by installing a prebuilt package
+# for your OS. See README.md "Installing libopenshot" for options.
+#
+# If you obtain openshot via a system package manager, make sure the same
+# Python interpreter you run this script with can `import openshot` - on
+# Debian/Ubuntu this usually means using the system python3, not a venv,
+# unless you symlink/copy the compiled module into the venv's site-packages.
